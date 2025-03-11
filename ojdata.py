@@ -179,7 +179,7 @@ def process_multiple_files(file_list):
     return results, measurement_headers
 
 def main():
-    st.title("Processore di XML e Calcoli")
+    st.title("Estrazione dati Optojump (ultimi 15 minuti)")
     
     st.markdown("""
     **Descrizione del Programma**
