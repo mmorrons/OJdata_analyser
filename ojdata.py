@@ -1,8 +1,8 @@
 import streamlit as st
 
 st.set_page_config(
-    page_title="SAS - AUC", 
-    page_icon="🏃",
+    page_title="Optojump Analyser", 
+    page_icon=":material/sprint",
     layout="wide")
 
 import xml.etree.ElementTree as ET
