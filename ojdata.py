@@ -165,7 +165,6 @@ def process_single_file(file_bytes, original_filename):
 
 def main():
     st.title("Optojump Data Analyser")
-    st.write("Seleziona i file di optojump, attenta che siano descritti come Cognome_Nome(o_più_nomi)_Treadmill_8km_h_28_02_2025_13_18_12_Sessione_Musica/Nomusica")
 
     # Let the user upload multiple XML files
     uploaded_files = st.file_uploader(
