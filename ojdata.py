@@ -34,13 +34,12 @@ def parse_row(row, ns):
 def parse_filename(filename):
     """
     Parses the file name to extract:
-      - Cognome: primo token.
-      - Nome: tutti i token tra il primo e "Treadmill" (uniti con uno spazio).
-      - Sessione: il token in posizione (Treadmill_index + 9).
-      - Musica: il token in posizione (Treadmill_index + 10); se inizia con "NM" restituisce "no musica",
-                se inizia con "M" restituisce "musica".
-                
-    Il nome del file deve seguire il formato:
+      - Cognome: first token.
+      - Nome: all tokens between the first token and "Treadmill" (joined with spaces).
+      - Sessione: the token at index (Treadmill_index + 9).
+      - Musica: the token at index (Treadmill_index + 10); if it starts with "NM", output "no musica",
+                if it starts with "M", output "musica".
+    Expected file name format:
       Cognome_Nome(...additional)_Treadmill_8km_h_dd_mm_yyyy_hh_mm_ss_T1(orT2)_M(orNM).xml
     """
     base = os.path.basename(filename)
@@ -75,9 +74,10 @@ def process_single_file(file_bytes, original_filename):
       - Parsea l'XML e ricostruisce le righe.
       - Estrae le informazioni del soggetto dal nome del file.
       - Trova la riga in cui compare "Impulso esterno STOP" e legge il valore di Tempo[s].
-      - Definisce l'intervallo degli ultimi 15 minuti (900 secondi) prima di T_stop.
-      - Calcola la media di ogni colonna (a destra di Tempo[s]) per le righe all'interno dell'intervallo.
-      - Restituisce un dizionario con le informazioni del soggetto, T_start, T_stop e i valori medi (come float).
+      - Definisce un intervallo di 15 minuti (900 secondi) precedenti T_stop.
+      - Per tutte le colonne a destra di Tempo[s], calcola la media sui dati nell'intervallo, 
+        eccetto per la prima colonna (Distanza[m]), per la quale viene preso l'ultimo valore valido.
+      - Restituisce un dizionario con le informazioni del soggetto, T_start, T_stop e i valori calcolati.
     """
     ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
     tree = ET.parse(file_bytes)
@@ -98,16 +98,16 @@ def process_single_file(file_bytes, original_filename):
     try:
         hash_col = header.index('#')
     except ValueError:
-        hash_col = 23  # fallback
+        hash_col = 23
     try:
         tempo_col = header.index('Tempo[s]')
     except ValueError:
-        tempo_col = 25  # fallback
+        tempo_col = 25
 
-    # Estrae le informazioni del soggetto dal nome del file
+    # Estrae informazioni soggetto dal nome del file
     subject_surname, subject_name, session_token, musica = parse_filename(original_filename)
 
-    # Trova la riga STOP
+    # Trova la riga STOP e il valore di T_stop
     stop_row_index = None
     T_stop = None
     for i, row in enumerate(parsed_rows):
@@ -121,14 +121,16 @@ def process_single_file(file_bytes, original_filename):
                         raise ValueError(f"Valore non valido in Tempo[s] nella riga STOP: {row[tempo_col]}")
                 break
     if stop_row_index is None or T_stop is None:
-        raise ValueError("Nessuna riga STOP valida trovata o Tempo[s] non numerico.")
+        raise ValueError("Nessuna riga STOP valida o Tempo[s] non numerico.")
 
-    T_start = T_stop - 900.0  # 15 minuti in secondi
+    T_start = T_stop - 900.0  # intervallo di 15 minuti
 
     num_cols = len(header)
     sums = {col: 0.0 for col in range(tempo_col+1, num_cols)}
     counts = {col: 0 for col in range(tempo_col+1, num_cols)}
+    last_values = {col: None for col in range(tempo_col+1, num_cols)}  # per memorizzare l'ultimo valore valido
 
+    # Processa le righe dall'indice 1 fino a quella precedente la STOP
     for row in parsed_rows[1:stop_row_index]:
         if len(row) > tempo_col and row[tempo_col]:
             try:
@@ -142,14 +144,29 @@ def process_single_file(file_bytes, original_filename):
                             val = float(row[col].replace(',', '.'))
                         except ValueError:
                             continue
-                        sums[col] += val
-                        counts[col] += 1
+                        # Per la prima colonna dopo Tempo[s] (Distanza[m]), salviamo l'ultimo valore
+                        if col == tempo_col + 1:
+                            last_values[col] = val
+                        else:
+                            sums[col] += val
+                            counts[col] += 1
+
+    averages = {}
+    for col in range(tempo_col+1, num_cols):
+        if col == tempo_col + 1:
+            # Utilizza l'ultimo valore valido invece della media
+            averages[col] = last_values[col]
+        else:
+            if counts[col] > 0:
+                averages[col] = sums[col] / counts[col]
+            else:
+                averages[col] = None
 
     measurement_headers = header[tempo_col+1:]
     measurement_avgs = []
     for col in range(tempo_col+1, num_cols):
-        if counts[col] > 0:
-            measurement_avgs.append(sums[col] / counts[col])
+        if averages[col] is not None:
+            measurement_avgs.append(averages[col])
         else:
             measurement_avgs.append(None)
 
@@ -233,16 +250,16 @@ def main():
         st.dataframe(summary_df)
         
         # Build final DataFrame for Excel output
-        col_names = ["Cognome", "Nome", "Sessione", "Musica"]
+        col_names = ["Cognome", "Nome", "Sessione", "Musica"] + ["T_start", "T_stop"]
         if measurement_headers:
             col_names += measurement_headers
         data_rows = []
         for r in results:
-            row = [r["Cognome"], r["Nome"], r["Sessione"], r["Musica"]] + r["Measurements"]
+            row = [r["Cognome"], r["Nome"], r["Sessione"], r["Musica"], r["T_start"], r["T_stop"]] + r["Measurements"]
             data_rows.append(row)
         df = pd.DataFrame(data_rows, columns=col_names)
         
-        # Write Excel file to in-memory buffer
+        # Write to Excel file in-memory
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
             df.to_excel(writer, index=False, sheet_name="Averages")
@@ -257,4 +274,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
